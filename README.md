@@ -23,7 +23,7 @@ The **Simple Playlist Extractor** is a lightweight tool for extracting and filte
 
 ## Usage
 
-1. Open `simple_playlist_extractor_baseline_final_copylogic.html` in your browser.
+1. Open `simple_playlist_extractor.html` in your browser.
 2. Drag and drop a `.jwlplaylist` / `.jwlibrary` file, or use **Choose File**.
 3. Click **Extract** to parse and view results.
 4. Use filters or checklist mode to refine results.
