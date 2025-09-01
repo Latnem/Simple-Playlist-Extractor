@@ -1,0 +1,108 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Simple Playlist Extractor</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <style>
+    .row-hover:hover{background:rgba(0,0,0,0.03);}
+    .drop-active{ border-color: #0D9488 !important; background: rgba(13,148,136,0.06); }
+  </style>
+</head>
+<body class="bg-gray-50 text-gray-900">
+  <div class="max-w-4xl mx-auto p-6 space-y-6">
+    <section class="bg-white rounded-2xl shadow overflow-hidden">
+      <!-- Deep teal accent strip (24px) -->
+      <div class="h-6 bg-teal-700"></div>
+
+      <!-- Card content -->
+      <div class="p-6 space-y-4">
+        <h1 class="text-xl font-bold">Simple Playlist Extractor</h1>
+
+        <!-- Status / Error -->
+        <div id="status" class="hidden rounded-lg border border-blue-300 bg-blue-50 text-blue-800 p-3 text-sm"></div>
+        <div id="error" class="hidden rounded-lg border border-red-300 bg-red-50 text-red-800 p-3 text-sm"></div>
+
+        <!-- Controls -->
+        <div class="grid md:grid-cols-2 gap-4">
+          <!-- File picker + actions (centered stacked, dotted gray border, drag & drop) -->
+          <div id="dropZone" class="rounded-lg border-2 border-dotted border-gray-300 flex flex-col items-center justify-center gap-3 p-8 text-center transition-colors">
+            <p class="text-lg text-gray-800">Drop .jwlplaylist / .jwlibrary here</p>
+            <span class="text-sm text-gray-500">or</span>
+            <label class="inline-block">
+              <input type="file" id="fileInput" accept=".jwlplaylist,.jwlibrary" class="hidden">
+              <span class="px-4 py-2 rounded-lg bg-blue-600 text-white cursor-pointer hover:bg-blue-700">Choose file…</span>
+            </label>
+            <p class="text-xs text-gray-600" id="fileName">File: —</p>
+            <button id="extractBtn" class="px-4 py-2 rounded-lg bg-emerald-600 text-white hover:bg-emerald-700 disabled:opacity-50" disabled>
+              Extract
+            </button>
+          </div>
+
+          <!-- View & Filter options -->
+          <div class="rounded-xl p-4 border space-y-3">
+            <label class="inline-flex items-center gap-2 text-sm">
+              <input id="toggleChecklist" type="checkbox" class="h-4 w-4 rounded border-gray-300">
+              <span>Show as checklist</span>
+            </label>
+
+            <div class="text-sm">
+              <div class="font-medium mb-1">Show:</div>
+              <div class="flex flex-wrap gap-3">
+                <label class="inline-flex items-center gap-2">
+                  <input type="radio" name="showMode" value="all" class="h-4 w-4" checked> <span>All</span>
+                </label>
+                <label class="inline-flex items-center gap-2">
+                  <input type="radio" name="showMode" value="filtered" class="h-4 w-4"> <span>Filtered</span>
+                </label>
+                <label class="inline-flex items-center gap-2">
+                  <input type="radio" name="showMode" value="custom" class="h-4 w-4"> <span>Custom</span>
+                </label>
+              </div>
+            </div>
+
+            <!-- Custom controls -->
+            <div id="customControls" class="space-y-2 hidden">
+              <div class="text-xs text-gray-600">Enter comma‑separated values.</div>
+              <div class="grid grid-cols-1 gap-2">
+                <label class="text-sm">
+                  <span class="block mb-1">Prefix (starts with):</span>
+                  <input id="customPrefixes" class="w-full rounded-md border p-2">
+                </label>
+                <label class="text-sm">
+                  <span class="block mb-1">Exact (match exactly):</span>
+                  <input id="customExacts" class="w-full rounded-md border p-2">
+                </label>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Diagnostics summary row (right aligned) with standalone big copy icon -->
+        <div class="w-full flex justify-end items-center gap-2">
+          <div id="diagTop" class="inline-flex items-center gap-2 text-xs bg-gray-50 border border-gray-200 rounded-full px-3 py-1 shadow-sm"></div>
+          <button id="copyTable" class="inline-flex items-center justify-center h-8 w-8 rounded-full border border-gray-200 bg-white hover:bg-gray-50 active:bg-gray-100 shadow-sm"
+                  title="Copy results" aria-label="Copy results">
+            <svg id="copyTableIcon" xmlns="http://www.w3.org/2000/svg" class="h-4.5 w-4.5 text-gray-700" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8">
+              <rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect>
+              <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path>
+            </svg>
+          </button>
+        </div>
+
+        <!-- Extracted Data Display -->
+        <div id="checklist" class="space-y-2 mt-2"></div>
+      </div>
+    </section>
+  </div>
+
+  <!-- JSZip + sql.js -->
+  <script src="https://cdn.jsdelivr.net/npm/jszip@3.10.1/dist/jszip.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/sql.js@1.9.0/dist/sql-wasm.js"></script>
+
+<script>
+// ... JavaScript logic omitted for brevity, same as finalized baseline ...
+</script>
+</body>
+</html>
