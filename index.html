@@ -508,15 +508,104 @@ function extractVersesFromPackageDB(db){
 }
 
 // Extend doExtract to also collect/display Bible refs
-const _doExtract_orig = doExtract;
-async function doExtract(){
-  await _doExtract_orig.apply(this, arguments);
+// ---- NWT Bible catalog integration ----
+let NWT = { db: null, ready: false, tables: new Set() };
+async function initNWT(){
   try{
-    if (!pickedFile) return;
+    if (!window.SQL){ return; }
+    const res = await fetch('nwt_ASL.db');
+    if (!res.ok){ console.warn('NWT DB not found (optional):', res.status); return; }
+    const buf = new Uint8Array(await res.arrayBuffer());
+    NWT.db = new SQL.Database(buf);
+    // discover tables
+    try{
+      const t = NWT.db.exec("SELECT name FROM sqlite_master WHERE type='table'");
+      const names = (t && t[0] && t[0].values ? t[0].values.map(r=>String(r[0])):[]);
+      NWT.tables = new Set(names);
+    }catch(_){}
+    NWT.ready = true;
+    showStatus((statusEl.textContent? statusEl.textContent + ' · ' : '') + 'Bible catalog ready');
+  }catch(e){ console.warn('NWT init failed:', e); }
+}
+
+function nwtQuery(sql, params=[]){
+  try{
+    const stmt = NWT.db.prepare(sql);
+    if (params && params.length) stmt.bind(params);
+    const rows = [];
+    while (stmt.step()){ rows.push(stmt.getAsObject()); }
+    stmt.free();
+    return rows;
+  }catch(_){ return []; }
+}
+
+function resolveBookName(bookNumber){
+  if (!NWT.ready) return null;
+  // Try common schemas/columns
+  let r = nwtQuery("SELECT Name FROM BibleBook WHERE BookNumber=? LIMIT 1", [bookNumber]);
+  if (r.length) return String(r[0].Name);
+  r = nwtQuery("SELECT Title FROM Book WHERE BookNumber=? LIMIT 1", [bookNumber]);
+  if (r.length) return String(r[0].Title);
+  r = nwtQuery("SELECT StandardName FROM BibleBook WHERE BookNumber=? LIMIT 1", [bookNumber]);
+  if (r.length) return String(r[0].StandardName);
+  return null;
+}
+
+function getVerseRefFromTables(verseId){
+  // Try a few likely schemas
+  let r = nwtQuery("SELECT BookNumber, ChapterNumber, VerseNumber FROM Verse WHERE VerseId=? LIMIT 1", [verseId]);
+  if (r.length){ const {BookNumber,ChapterNumber,VerseNumber} = r[0]; return {book:Number(BookNumber),chapter:Number(ChapterNumber),verse:Number(VerseNumber)}; }
+  r = nwtQuery("SELECT BookNumber, ChapterNumber, VerseNumber FROM BibleVerse WHERE VerseId=? LIMIT 1", [verseId]);
+  if (r.length){ const {BookNumber,ChapterNumber,VerseNumber} = r[0]; return {book:Number(BookNumber),chapter:Number(ChapterNumber),verse:Number(VerseNumber)}; }
+  r = nwtQuery("SELECT BookNumber, ChapterNumber, Verse FROM VerseIndex WHERE VerseId=? LIMIT 1", [verseId]);
+  if (r.length){ const {BookNumber,ChapterNumber,Verse} = r[0]; return {book:Number(BookNumber),chapter:Number(ChapterNumber),verse:Number(Verse)}; }
+  return null;
+}
+
+function formatVerse(vid){
+  if (vid==null) return '';
+  let ref = null;
+  if (NWT.ready){ ref = getVerseRefFromTables(vid); }
+  if (!ref){ return 'VerseId ' + vid; }
+  const name = resolveBookName(ref.book) || ('Book ' + ref.book);
+  return name + ' ' + ref.chapter + ':' + ref.verse;
+}
+
+function extractVersesFromPackageDB(db){
+  const q = (sql)=>{ try{ return db.exec(sql); }catch(_){ return []; } };
+  // Collect Marker→VerseId pairs
+  let res = q("SELECT m.Label, v.VerseId FROM PlaylistItemMarker m JOIN MarkerBibleVerseMap v ON v.MarkerId = m.Id");
+  if (!(res && res[0] && res[0].values && res[0].values.length)){
+    res = q("SELECT m.Label, v.VerseId FROM PlaylistItemMarker m JOIN BibleVerseMap v ON v.MarkerId = m.Id");
+  }
+  if (!(res && res[0] && res[0].values && res[0].values.length)){
+    res = q("SELECT Label, VerseId FROM PlaylistItemMarker WHERE VerseId IS NOT NULL");
+  }
+  const out = [];
+  const rows = (res && res[0] && res[0].values) ? res[0].values : [];
+  for (const row of rows){
+    const lbl = row[0] != null ? String(row[0]) : '';
+    const vid = row[1] != null ? Number(row[1]) : null;
+    if (vid != null) out.push({ label: lbl, verseId: vid, ref: formatVerse(vid) });
+  }
+  return out;
+}
+
+// Replace doExtract with an integrated version (no wrapping) to avoid recursion
+async function doExtract(){
+  try {
+    showError(""); showDiagTopHTML(0, ""); showStatus("Opening package...");
+    if (!pickedFile){ showError("No file selected — choose or drop a .jwlplaylist / .jwlibrary first."); return; }
+    if (!SQL_INIT_OK){ showError("SQL engine not ready — reload the page or check network to the CDN."); return; }
+    extractBtn.disabled = true; extractBtn.textContent = "Extracting…";
+
     const db = await loadZipAndDb(pickedFile);
+    latestRaw = extractRawLabels(db);
+    renderAllData();
+
+    // Bible refs (optional)
     const verses = extractVersesFromPackageDB(db);
     if (verses.length){
-      // Render a compact list under the table
       const wrap = document.createElement('div');
       wrap.className = 'mt-3 rounded-lg border border-gray-200 bg-white p-3';
       const h = document.createElement('div');
@@ -533,7 +622,15 @@ async function doExtract(){
       wrap.appendChild(ul);
       checklistEl.appendChild(wrap);
     }
-  }catch(e){ console.warn('Verse extraction failed:', e); }
+
+    const total = latestData.length;
+    showStatus(total ? "Done. Data extracted." : "Done. No labels found.");
+  } catch (err) {
+    console.error(err);
+    showError((err && err.message ? err.message : String(err)) + " — See console for details.");
+  } finally {
+    extractBtn.disabled = false; extractBtn.textContent = "Extract";
+  }
 }
 
 // Kick off optional NWT load after SQL init settles
