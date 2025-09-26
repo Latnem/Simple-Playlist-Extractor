@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>Simple Playlist Extractor — Emerald</title>
+  <title>Simple Playlist Extractor — Emerald (FIXED)</title>
   <script src="https://cdn.tailwindcss.com"></script>
   <style>
     .row-hover:hover{background:rgba(0,0,0,0.03);} 
@@ -31,6 +31,7 @@
             <p class="text-lg text-gray-800">Drop .jwlplaylist / .jwlibrary here</p>
             <span class="text-sm text-gray-500">or</span>
             <label class="inline-block">
+              <!-- NOTE: accept fixed to include ".jwlibrary" with a dot -->
               <input type="file" id="fileInput" accept=".jwlplaylist,.jwlibrary" class="hidden">
               <span class="px-4 py-2 rounded-lg bg-emerald-600 text-white cursor-pointer hover:bg-emerald-700">Choose file…</span>
             </label>
@@ -75,11 +76,11 @@
               <div class="grid grid-cols-1 gap-2">
                 <label class="text-sm">
                   <span class="block mb-1">Prefix (starts with):</span>
-                  <input id="customPrefixes" class="w-full rounded-md border p-2">
+                  <input id="customPrefixes" class="w-full rounded-md border p-2" placeholder="Title, Subheading, Q, …">
                 </label>
                 <label class="text-sm">
                   <span class="block mb-1">Exact (match exactly):</span>
-                  <input id="customExacts" class="w-full rounded-md border p-2">
+                  <input id="customExacts" class="w-full rounded-md border p-2" placeholder="Opening song, Closing song, …">
                 </label>
               </div>
             </div>
@@ -193,6 +194,16 @@ function restoreUIState(){
 }
 restoreUIState();
 
+function persistUIState(){
+  LS.set(STATE_KEYS.asChecklist, !!toggleChecklist.checked);
+  LS.set(STATE_KEYS.includeMarkers, !!toggleMarkers.checked);
+  const sel = [...showModeInputs].find(i => i.checked)?.value || 'all';
+  LS.set(STATE_KEYS.showMode, sel);
+  LS.set(STATE_KEYS.customPrefixes, customPrefixes.value || "");
+  LS.set(STATE_KEYS.customExacts, customExacts.value || "");
+}
+
+// Load .zip and open DB
 async function loadZipAndDb(file){
   if (!SQL_INIT_OK) throw new Error("SQL engine not ready (check internet connection).");
   showStatus("Reading archive...");
@@ -214,162 +225,71 @@ async function loadZipAndDb(file){
   return db;
 }
 
-function tableExists(db, name){
-  const res = db.exec(`SELECT name FROM sqlite_master WHERE type='table' AND lower(name)=lower('${name}')`);
-  return !!(res[0] && res[0].values && res[0].values.length);
-}
-
-// Extract both sources once; show/hide markers via checkbox without re-reading DB
+// Extract labels
 function extractRawLabels(db){
-  const base = [];
-  const markers = [];
-  let diagBase = '';
-  let diagMarkers = '';
-  let diagFallback = '';
+  const q = (sql) => {
+    try{ return db.exec(sql); } catch(_){ return []; }
+  };
+  const rowsToStrings = (res) => (res && res[0] && res[0].values ? res[0].values.map(v => (v && v[0] !== null ? String(v[0]) : '')) : []);
 
-  function addFromQuery(sql, pushTo, tag){
-    try{
-      const r = db.exec(sql);
-      const n = (r[0] && r[0].values) ? r[0].values.length : 0;
-      if (n){
-        r[0].values.forEach(v => { const t = (v[0]||"").toString().trim(); if (t) pushTo.push(t); });
-      }
-      return `${tag}: +${n}`;
-    }catch(e){
-      return `${tag} error: ${(e && e.message) || e}`;
-    }
-  }
+  const baseRes = q("SELECT Label FROM PlaylistItem WHERE Label IS NOT NULL");
+  const markerRes = q("SELECT Label FROM PlaylistItemMarker WHERE Label IS NOT NULL");
 
-  if (tableExists(db, 'PlaylistItem')){
-    diagBase = addFromQuery("SELECT Label FROM PlaylistItem WHERE Label IS NOT NULL", base, 'PlaylistItem.Label');
-  }
-  if (tableExists(db, 'PlaylistItemMarker')){
-    diagMarkers = addFromQuery("SELECT Label FROM PlaylistItemMarker WHERE Label IS NOT NULL", markers, 'PlaylistItemMarker.Label');
-  }
+  const base = rowsToStrings(baseRes);
+  const markers = rowsToStrings(markerRes);
 
-  if (base.length === 0 && markers.length === 0){
-    // Fallback: any table with a Label column
-    const tablesRes = db.exec("SELECT name FROM sqlite_master WHERE type='table'");
-    const tables = (tablesRes[0] && tablesRes[0].values) ? tablesRes[0].values.map(v => v[0]) : [];
-    const collected = [];
-    tables.forEach(t => {
-      try{
-        const info = db.exec(`PRAGMA table_info('${t}')`);
-        const cols = (info[0] && info[0].values) ? info[0].values.map(v => v[1]) : [];
-        if (cols.map(c => (c||"").toLowerCase()).includes("label")){
-          const tag = `${t}.Label`;
-          const note = addFromQuery(`SELECT Label FROM '${t}' WHERE Label IS NOT NULL`, collected, tag);
-          diagFallback = diagFallback ? (diagFallback + ' | ' + note) : note;
-        }
-      }catch(_){/* ignore */}
-    });
-    // Treat fallback as base
-    base.push(...collected);
-  }
-
-  return { base, markers, diagBase, diagMarkers, diagFallback };
+  return {
+    base,
+    markers,
+    diagBase: `PlaylistItem: ${base.length}`,
+    diagMarkers: `PlaylistItemMarker: ${markers.length}`,
+    diagFallback: ''
+  };
 }
 
-function dedupePreserveOrder(arr){
-  const seen = new Set();
-  const out = [];
-  arr.forEach(l => { const k = (l||'').toLowerCase(); if (l && !seen.has(k)){ seen.add(k); out.push(l); } });
-  return out;
-}
+function uniq(arr){ return [...new Set(arr.filter(Boolean))]; }
 
-function getShowMode(){
-  const sel = [...showModeInputs].find(i => i.checked);
-  return sel ? sel.value : "all";
-}
-
-function parseCSV(str){
-  return (str || "")
-    .split(",")
-    .map(s => s.trim())
-    .filter(Boolean);
-}
-
-function applyFilters(labels){
-  const mode = getShowMode();
-  if (mode === "all") return labels;
-
-  if (mode === "filtered"){
-    const excluded = DEFAULT_EXCLUDE_PREFIXES.map(p => p.toLowerCase());
-    return labels.filter(lbl => {
-      const l = lbl.toLowerCase();
-      return !excluded.some(p => l.startsWith(p.toLowerCase()));
-    });
-  }
-
-  const prefixes = parseCSV(customPrefixes.value).map(p => p.toLowerCase());
-  const exacts = parseCSV(customExacts.value).map(e => e.toLowerCase());
-
-  if (prefixes.length === 0 && exacts.length === 0) return labels;
-
-  return labels.filter(lbl => {
-    const l = lbl.toLowerCase();
-    const prefixMatch = prefixes.some(p => l.startsWith(p));
-    const exactMatch = exacts.includes(l);
-    return prefixMatch || exactMatch;
-  });
-}
-
-function updateDiagnosticsView(){
+function applyFilters(all){
+  const showMode = [...showModeInputs].find(i => i.checked)?.value || 'all';
   const includeMarkers = !!toggleMarkers.checked;
-  const count = latestData.length;
-  let sources = latestRaw.diagBase || 'No sources';
-  if (includeMarkers && latestRaw.diagMarkers){
-    sources = sources ? (sources + ' | ' + latestRaw.diagMarkers) : latestRaw.diagMarkers;
-  }
-  if (!sources && latestRaw.diagFallback){
-    sources = latestRaw.diagFallback;
-  }
-  showDiagTopHTML(count, sources);
-}
+  const prefixes = customPrefixes.value.split(',').map(s => s.trim()).filter(Boolean);
+  const exacts = customExacts.value.split(',').map(s => s.trim()).filter(Boolean);
 
-function getVisibleLabels(){
-  const includeMarkers = !!toggleMarkers.checked;
-  const joined = includeMarkers ? [...latestRaw.base, ...latestRaw.markers] : [...latestRaw.base];
-  return dedupePreserveOrder(joined);
-}
+  // Base set
+  let combined = [...all.base];
+  if (includeMarkers) combined.push(...all.markers);
 
-function getCopyItems(){
-  const isChecklist = !!toggleChecklist.checked;
-  const items = [];
-  if (isChecklist){
-    // copy only checked items
-    const rows = checklistEl.querySelectorAll('tr');
-    rows.forEach(row => {
-      const cb = row.querySelector('input[type="checkbox"]');
-      const span = row.querySelector('td span');
-      if (cb && cb.checked && span){
-        const txt = span.textContent.trim();
-        if (txt) items.push(txt);
-      }
-    });
-  } else {
-    // copy all visible rows
-    const tds = checklistEl.querySelectorAll('td');
-    tds.forEach(td => {
-      const txt = td.textContent.trim();
-      if (txt) items.push(txt);
+  // Default filtered view (excludes noisy prefixes)
+  if (showMode === 'filtered'){
+    const drop = new Set([...DEFAULT_EXCLUDE_PREFIXES.map(p=>p.toLowerCase()), ...prefixes.map(p=>p.toLowerCase())]);
+    combined = combined.filter(x => x && ![...drop].some(p => x.toLowerCase().startsWith(p + ' ')));
+  }
+
+  // Custom view
+  if (showMode === 'custom'){
+    const wantPrefix = prefixes.map(p=>p.toLowerCase());
+    const wantExact = new Set(exacts.map(e=>e.toLowerCase()));
+    combined = combined.filter(x => {
+      const t = x.toLowerCase();
+      const matchPrefix = !wantPrefix.length || wantPrefix.some(p => t.startsWith(p + ' '));
+      const matchExact = !wantExact.size || wantExact.has(t);
+      return matchPrefix || matchExact;
     });
   }
-  return items;
+
+  return uniq(combined);
 }
 
 function getChecks(){ return LS.get(STATE_KEYS.checks, {}); }
-function setChecks(obj){ LS.set(STATE_KEYS.checks, obj || {}); }
+function setChecks(v){ LS.set(STATE_KEYS.checks, v || {}); }
 
 function renderAllData(){
-  const asChecklist = !!toggleChecklist.checked;
   checklistEl.innerHTML = '';
+  const sources = [latestRaw.diagBase, latestRaw.diagMarkers, latestRaw.diagFallback].filter(Boolean).join(' · ');
+  const labels = applyFilters(latestRaw);
+  showDiagTopHTML(labels.length, sources || '—');
 
-  let labels = getVisibleLabels()
-    .map(txt => (typeof txt === 'string') ? txt.trim() : '')
-    .filter(txt => txt.length > 0);
-
-  labels = applyFilters(labels);
+  const asChecklist = !!toggleChecklist.checked;
   latestData = labels.map(l => ({label: l}));
 
   if (labels.length === 0){
@@ -377,7 +297,6 @@ function renderAllData(){
     empty.className = "text-sm text-gray-500";
     empty.textContent = "No labels found.";
     checklistEl.appendChild(empty);
-    updateDiagnosticsView();
     return;
   }
 
@@ -397,7 +316,6 @@ function renderAllData(){
       table.appendChild(row);
     });
     checklistEl.appendChild(table);
-    updateDiagnosticsView();
     return;
   }
 
@@ -416,8 +334,7 @@ function renderAllData(){
 
     cb.addEventListener('change', () => {
       const updated = getChecks();
-      if (cb.checked) updated[txt] = true;
-      else delete updated[txt];
+      if (cb.checked) updated[txt] = true; else delete updated[txt];
       setChecks(updated);
     });
 
@@ -430,7 +347,6 @@ function renderAllData(){
     table.appendChild(row);
   });
   checklistEl.appendChild(table);
-  updateDiagnosticsView();
 }
 
 // Extract action
@@ -507,67 +423,31 @@ smokeBtn.addEventListener('click', async () => {
   }
 });
 
-// Copy table results handler
-copyTableBtn.addEventListener('click', async () => {
-  try{
-    const items = getCopyItems();
-    if (!items.length){ showError("Nothing to copy — no matching items."); return; }
-    await navigator.clipboard.writeText(items.join('\n'));
-    // visual feedback
-    const newIcon = document.createElement('svg');
-    newIcon.setAttribute('id','copyTableIcon');
-    newIcon.setAttribute('xmlns','http://www.w3.org/2000/svg');
-    newIcon.setAttribute('class','h-4.5 w-4.5 text-emerald-700');
-    newIcon.setAttribute('viewBox','0 0 24 24');
-    newIcon.setAttribute('fill','none');
-    newIcon.setAttribute('stroke','currentColor');
-    newIcon.setAttribute('stroke-width','2');
-    newIcon.innerHTML = '<path d="M20 6L9 17l-5-5" stroke-linecap="round" stroke-linejoin="round"></path>';
-    copyTableIcon.replaceWith(newIcon);
-    copyTableIcon = newIcon;
-    setTimeout(() => {
-      const backIcon = document.createElement('svg');
-      backIcon.setAttribute('id','copyTableIcon');
-      backIcon.setAttribute('xmlns','http://www.w3.org/2000/svg');
-      backIcon.setAttribute('class','h-4.5 w-4.5 text-gray-700');
-      backIcon.setAttribute('viewBox','0 0 24 24');
-      backIcon.setAttribute('fill','none');
-      backIcon.setAttribute('stroke','currentColor');
-      backIcon.setAttribute('stroke-width','1.8');
-      backIcon.innerHTML = '<rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path>';
-      copyTableIcon.replaceWith(backIcon);
-      copyTableIcon = backIcon;
-    }, 1200);
-  }catch(e){
-    showError("Copy failed: " + (e && e.message ? e.message : e));
-  }
-});
+// ✅ FIX: Wire up Extract button
+extractBtn.addEventListener('click', doExtract);
 
-// Option toggles
-toggleChecklist.addEventListener('change', () => {
-  LS.set(STATE_KEYS.asChecklist, !!toggleChecklist.checked);
-  renderAllData();
+// UI listeners -> persist state
+[toggleChecklist, toggleMarkers, customPrefixes, customExacts].forEach(el => {
+  el.addEventListener('input', () => { persistUIState(); renderAllData(); });
 });
-
-toggleMarkers.addEventListener('change', () => {
-  LS.set(STATE_KEYS.includeMarkers, !!toggleMarkers.checked);
-  renderAllData();
-});
-
 [...showModeInputs].forEach(inp => {
   inp.addEventListener('change', () => {
-    LS.set(STATE_KEYS.showMode, inp.value);
-    customControls.classList.toggle("hidden", inp.value !== "custom");
+    persistUIState();
+    customControls.classList.toggle('hidden', inp.value !== 'custom' || !inp.checked);
     renderAllData();
   });
 });
 
-[customPrefixes, customExacts].forEach(inp => {
-  inp.addEventListener('input', () => {
-    LS.set(STATE_KEYS.customPrefixes, customPrefixes.value || "");
-    LS.set(STATE_KEYS.customExacts, customExacts.value || "");
-    renderAllData();
-  });
+// Copy results (plain text)
+copyTableBtn.addEventListener('click', async () => {
+  try{
+    const labels = latestData.map(o => o.label).join('\n');
+    await navigator.clipboard.writeText(labels);
+    // flash icon
+    copyTableIcon.outerHTML = '<svg id="copyTableIcon" xmlns="http://www.w3.org/2000/svg" class="h-4.5 w-4.5 text-emerald-600" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M20 6L9 17l-5-5"/></svg>';
+    copyTableIcon = document.getElementById('copyTableIcon');
+    setTimeout(()=>{ copyTableIcon.outerHTML = '<svg id="copyTableIcon" xmlns="http://www.w3.org/2000/svg" class="h-4.5 w-4.5 text-gray-700" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path></svg>'; copyTableIcon = document.getElementById('copyTableIcon'); }, 900);
+  }catch(e){ showError('Copy failed: ' + (e && e.message ? e.message : e)); }
 });
 </script>
 </body>
