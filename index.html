@@ -38,7 +38,6 @@
             <p class="text-xs text-gray-600" id="fileName">File: —</p>
             <div class="flex gap-2">
               <button id="extractBtn" type="button" class="px-4 py-2 rounded-lg bg-emerald-700 text-white hover:bg-emerald-800 disabled:opacity-50" disabled>Extract</button>
-              <button id="smokeTest" type="button" class="px-3 py-2 rounded-lg border border-emerald-600 text-emerald-700 bg-white hover:bg-emerald-50">Self‑test</button>
             </div>
           </div>
 
@@ -133,7 +132,6 @@ const dropZone = $("#dropZone");
 const fileInput = $("#fileInput");
 const fileName = $("#fileName");
 const extractBtn = $("#extractBtn");
-const smokeBtn = $("#smokeTest");
 const checklistEl = $("#checklist");
 const toggleChecklist = $("#toggleChecklist");
 const toggleMarkers = $("#toggleMarkers");
@@ -408,21 +406,6 @@ dropZone.addEventListener("drop", (e) => {
   extractBtn.disabled = false;
 });
 
-// Self-test (verifies button wiring & SQL availability without a file)
-smokeBtn.addEventListener('click', async () => {
-  try{
-    if (!SQL_INIT_OK){ showError('SQL engine not ready — cannot run self-test.'); return; }
-    const db = new SQL.Database();
-    db.run("CREATE TABLE PlaylistItem (Label TEXT); INSERT INTO PlaylistItem VALUES ('Opening song'),('Living as Christians'),('Closing song');");
-    latestRaw = extractRawLabels(db);
-    renderAllData();
-    showStatus('Self-test populated 3 sample labels.');
-  }catch(e){
-    console.error(e);
-    showError('Self-test failed: ' + (e && e.message ? e.message : e));
-  }
-});
-
 // ✅ FIX: Wire up Extract button
 extractBtn.addEventListener('click', doExtract);
 
@@ -449,6 +432,113 @@ copyTableBtn.addEventListener('click', async () => {
     setTimeout(()=>{ copyTableIcon.outerHTML = '<svg id="copyTableIcon" xmlns="http://www.w3.org/2000/svg" class="h-4.5 w-4.5 text-gray-700" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path></svg>'; copyTableIcon = document.getElementById('copyTableIcon'); }, 900);
   }catch(e){ showError('Copy failed: ' + (e && e.message ? e.message : e)); }
 });
+// ---- NWT Bible catalog integration ----
+let NWT = { db: null, ready: false, tables: new Set() };
+async function initNWT(){
+  try{
+    if (!window.SQL){ return; }
+    const res = await fetch('nwt_ASL.db');
+    if (!res.ok){ console.warn('NWT DB not found (optional):', res.status); return; }
+    const buf = new Uint8Array(await res.arrayBuffer());
+    NWT.db = new SQL.Database(buf);
+    // discover tables
+    try{
+      const t = NWT.db.exec("SELECT name FROM sqlite_master WHERE type='table'");
+      const names = (t && t[0] && t[0].values ? t[0].values.map(r=>String(r[0])):[]);
+      NWT.tables = new Set(names);
+    }catch(_){}
+    NWT.ready = true;
+    showStatus((statusEl.textContent? statusEl.textContent + ' · ' : '') + 'Bible catalog ready');
+  }catch(e){ console.warn('NWT init failed:', e); }
+}
+
+function nwtQuery(sql, params=[]){ try{ return NWT.db.exec(sql, params); } catch(_){ return []; } }
+
+function resolveBookName(bookNumber){
+  if (!NWT.ready) return null;
+  // Try common schemas
+  let r = nwtQuery("SELECT Name FROM BibleBook WHERE BookNumber=? LIMIT 1", [bookNumber]);
+  if (r && r[0] && r[0].values && r[0].values[0]) return String(r[0].values[0][0]);
+  r = nwtQuery("SELECT Title FROM Book WHERE BookNumber=? LIMIT 1", [bookNumber]);
+  if (r && r[0] && r[0].values && r[0].values[0]) return String(r[0].values[0][0]);
+  r = nwtQuery("SELECT StandardName FROM BibleBook WHERE BookNumber=? LIMIT 1", [bookNumber]);
+  if (r && r[0] && r[0].values && r[0].values[0]) return String(r[0].values[0][0]);
+  return null;
+}
+
+function getVerseRefFromTables(verseId){
+  // Try a few likely schemas
+  let r = nwtQuery("SELECT BookNumber, ChapterNumber, VerseNumber FROM Verse WHERE VerseId=? LIMIT 1", [verseId]);
+  if (r && r[0] && r[0].values && r[0].values[0]){ const [b,c,v]=r[0].values[0]; return {book:Number(b),chapter:Number(c),verse:Number(v)}; }
+  r = nwtQuery("SELECT BookNumber, ChapterNumber, VerseNumber FROM BibleVerse WHERE VerseId=? LIMIT 1", [verseId]);
+  if (r && r[0] && r[0].values && r[0].values[0]){ const [b,c,v]=r[0].values[0]; return {book:Number(b),chapter:Number(c),verse:Number(v)}; }
+  r = nwtQuery("SELECT BookNumber, ChapterNumber, Verse FROM VerseIndex WHERE VerseId=? LIMIT 1", [verseId]);
+  if (r && r[0] && r[0].values && r[0].values[0]){ const [b,c,v]=r[0].values[0]; return {book:Number(b),chapter:Number(c),verse:Number(v)}; }
+  return null;
+}
+
+function formatVerse(vid){
+  if (!vid && vid!==0) return '';
+  let ref = null;
+  if (NWT.ready){ ref = getVerseRefFromTables(vid); }
+  if (!ref){ return 'VerseId ' + vid; }
+  const name = resolveBookName(ref.book) || ('Book ' + ref.book);
+  return name + ' ' + ref.chapter + ':' + ref.verse;
+}
+
+function extractVersesFromPackageDB(db){
+  const q = (sql)=>{ try{ return db.exec(sql); }catch(_){ return []; } };
+  // Try multiple join patterns to collect marker label + verse ids
+  let res = q("SELECT m.Label, v.VerseId FROM PlaylistItemMarker m JOIN MarkerBibleVerseMap v ON v.MarkerId = m.Id");
+  if (!(res && res[0] && res[0].values && res[0].values.length)){
+    res = q("SELECT m.Label, v.VerseId FROM PlaylistItemMarker m JOIN BibleVerseMap v ON v.MarkerId = m.Id");
+  }
+  if (!(res && res[0] && res[0].values && res[0].values.length)){
+    // Some exports store verse map on PlaylistItem -> try generic lookup if a VerseId column exists anywhere
+    res = q("SELECT Label, VerseId FROM PlaylistItemMarker WHERE VerseId IS NOT NULL");
+  }
+  const out = [];
+  const rows = (res && res[0] && res[0].values) ? res[0].values : [];
+  for (const row of rows){
+    const lbl = row[0] != null ? String(row[0]) : '';
+    const vid = row[1] != null ? Number(row[1]) : null;
+    if (vid != null) out.push({ label: lbl, verseId: vid, ref: formatVerse(vid) });
+  }
+  return out;
+}
+
+// Extend doExtract to also collect/display Bible refs
+const _doExtract_orig = doExtract;
+async function doExtract(){
+  await _doExtract_orig.apply(this, arguments);
+  try{
+    if (!pickedFile) return;
+    const db = await loadZipAndDb(pickedFile);
+    const verses = extractVersesFromPackageDB(db);
+    if (verses.length){
+      // Render a compact list under the table
+      const wrap = document.createElement('div');
+      wrap.className = 'mt-3 rounded-lg border border-gray-200 bg-white p-3';
+      const h = document.createElement('div');
+      h.className = 'text-sm font-semibold text-gray-700 mb-2';
+      h.textContent = 'Bible references found (' + verses.length + ')';
+      wrap.appendChild(h);
+      const ul = document.createElement('ul');
+      ul.className = 'text-sm space-y-1';
+      verses.slice(0,300).forEach(v => {
+        const li = document.createElement('li');
+        li.innerHTML = '<span class="font-medium">' + (v.ref || ('VerseId ' + v.verseId)) + '</span>' + (v.label? ' — <span class="text-gray-700">'+ v.label.replace(/</g,'&lt;') +'</span>' : '');
+        ul.appendChild(li);
+      });
+      wrap.appendChild(ul);
+      checklistEl.appendChild(wrap);
+    }
+  }catch(e){ console.warn('Verse extraction failed:', e); }
+}
+
+// Kick off optional NWT load after SQL init settles
+setTimeout(()=>{ initNWT(); }, 1000);
+
 </script>
 </body>
 </html>
